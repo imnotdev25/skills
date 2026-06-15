@@ -1,0 +1,140 @@
+# Sample Paper for Teaching: "LoRA: Low-Rank Adaptation of Large Language Models"
+
+*Shortened version for teaching the three-pass method*
+*Original: Hu et al., arXiv:2106.09685 (ICML 2022)*
+
+---
+
+## Title
+LoRA: Low-Rank Adaptation of Large Language Models
+
+## Authors
+Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, Weizhu Chen
+
+## Venue
+ICML 2022 | arXiv:2106.09685
+
+---
+
+## Abstract
+
+Adapting large pre-trained models to downstream tasks via full fine-tuning is prohibitively expensive. We propose Low-Rank Adaptation (LoRA), which freezes the pre-trained model weights and injects trainable rank-decomposition matrices into each layer of the Transformer architecture. LoRA reduces the number of trainable parameters by 10,000× and GPU memory by 3× compared to full fine-tuning, while matching or exceeding fine-tuning performance on RoBERTa, DeBERTa, and GPT-3. LoRA enables efficient task-switching by storing only the small LoRA weights. We also show LoRA can be merged with the base model with zero inference latency.
+
+---
+
+## 1. Introduction
+
+Large Language Models (LLMs) like GPT-3 (175B params) achieve remarkable few-shot performance. However, adapting them to specific tasks requires fine-tuning, which means updating all parameters. Full fine-tuning of GPT-3 needs ~1.2TB GPU memory (8×A100 80GB) and is infeasible for most researchers.
+
+Prior work explored:
+- **Adapter layers** (Houlsby et al., 2019): Add bottleneck layers between Transformer layers. Adds inference latency.
+- **Prefix tuning** (Li & Liang, 2021): Prepend trainable vectors to input. Hard to optimize.
+- **Prompt tuning** (Lester et al., 2021): Only tune soft prompts. Limited expressivity.
+
+**Our insight**: The change in weights during fine-tuning has low "intrinsic dimension" — it can be approximated by low-rank matrices.
+
+**Contributions**:
+1. LoRA: freeze pre-trained weights, add trainable rank-r matrices A and B (W + BA)
+2. 10,000× fewer trainable params, 3× less GPU memory vs full fine-tuning
+3. Matches/exceeds full fine-tuning on NLG/NLU benchmarks
+4. Enables efficient task-switching (swap LoRA weights)
+5. Zero inference latency (merge weights at deployment)
+
+---
+
+## 2. Method
+
+### 2.1 Low-Rank Adaptation
+
+For a pre-trained weight matrix W ∈ ℝ^(d×k), we constrain the update ΔW to have low rank r ≪ min(d,k):
+
+ΔW = BA, where B ∈ ℝ^(d×r), A ∈ ℝ^(r×k)
+
+During training: W is frozen; only A and B are trained.
+Forward pass: h = W₀x + BAx = W₀x + ΔWx
+
+Initialize A with random Gaussian, B with zeros → ΔW = 0 at start.
+
+### 2.2 Where to Apply LoRA
+
+We apply LoRA to **query and value projection matrices** in Transformer attention layers (W_q, W_v). Not applied to W_k, W_o, FFN layers — ablation shows minimal benefit.
+
+### 2.3 Merging for Zero Latency
+
+After training: W' = W₀ + BA. This is a single matrix multiply. No extra forward pass. Inference identical to original model.
+
+### 2.4 Task Switching
+
+Store only A, B per task (few MB). Swap in/out for different tasks. Base model shared.
+
+---
+
+## 3. Experiments
+
+### 3.1 Setup
+
+**Models**: RoBERTa-large (355M), DeBERTa-xxlarge (1.5B), GPT-2 (1.5B), GPT-3 (175B)
+**Tasks**: GLUE (NLU), WikiSQL, SAMSum, GPT-3 few-shot (NLG)
+**Baselines**: Full fine-tuning, Adapter, Prefix-tuning, Prompt-tuning, BitFit
+**Config**: r=8, α=16, dropout=0.1 (LoRA scaling: α/r)
+
+### 3.2 Main Results (Table 1)
+
+| Model | Method | Trainable Params | GLUE Avg | WikiSQL | SAMSum |
+|-------|--------|------------------|----------|---------|--------|
+| RoBERTa | Fine-tune | 355M | 87.6 | 90.1 | — |
+| RoBERTa | Adapter | 1.2M | 86.9 | 89.5 | — |
+| RoBERTa | LoRA (r=8) | **0.8M** | **87.9** | **90.4** | — |
+| DeBERTa | Fine-tune | 1.5B | 91.2 | — | — |
+| DeBERTa | LoRA (r=8) | **4.7M** | **91.5** | — | — |
+| GPT-3 | Fine-tune | 175B | — | — | 42.1 |
+| GPT-3 | LoRA (r=64) | **4.7M** | — | — | **43.7** |
+
+**Key finding**: LoRA matches or beats full fine-tuning with 10,000× fewer params on GPT-3.
+
+### 3.3 Ablation Studies (Table 2)
+
+| Config | GLUE Avg | Notes |
+|--------|----------|-------|
+| LoRA on W_q, W_v (r=8) | 87.9 | Default |
+| LoRA on all attn (W_q,W_k,W_v,W_o) | 87.8 | No gain |
+| LoRA on FFN only | 86.2 | Worse |
+| r=1 | 86.5 | Too small |
+| r=64 | 88.0 | Diminishing returns |
+| α=1 (no scaling) | 87.2 | Scaling helps |
+| Train B only (A fixed) | 85.1 | Need both |
+
+### 3.4 Scaling Behavior (Figure 2)
+
+Performance vs rank r: sharp rise from r=1→8, plateau at r≥16. Suggests intrinsic dimension ~8–16.
+
+### 3.5 Task Switching (Table 3)
+
+| Task | LoRA Swap Time | Full FT Reload |
+|------|----------------|----------------|
+| SQuAD → MNLI | <1 sec | ~10 min |
+| Memory per task | 6MB | 1.2GB |
+
+---
+
+## 4. Related Work
+
+- **Intrinsic dimension** (Li et al., 2018): Fine-tuning trajectories lie in low-dim subspace
+- **Adapters** (Houlsby et al., 2019): Bottleneck layers, adds latency
+- **Prefix/Prompt tuning** (Li & Liang, 2021; Lester et al., 2021): Input-side only
+- **BitFit** (Ben-Zaken et al., 2021): Only tune biases — too limited
+
+---
+
+## 5. Limitations
+
+- Rank r is a hyperparameter; optimal r varies by task/model
+- Does not reduce activation memory during training (only param memory)
+- For very large r, approaches full fine-tuning cost
+- Theoretical understanding of why low-rank works is still developing
+
+---
+
+## 6. Conclusion
+
+LoRA enables efficient adaptation of massive models by freezing weights and learning low-rank updates. It matches full fine-tuning quality with dramatically fewer parameters, enabling task-switching and zero-latency deployment. Code available at: github.com/microsoft/LoRA
