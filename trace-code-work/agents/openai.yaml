@@ -1,0 +1,4 @@
+interface:
+  display_name: "Traceable Coding"
+  short_description: "Log decisions, call flow, exploration, and recall"
+  default_prompt: "Use $trace-code-work to make this coding change with daily traceability logs."
